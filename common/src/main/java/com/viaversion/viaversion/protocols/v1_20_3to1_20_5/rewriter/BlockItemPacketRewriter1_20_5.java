@@ -43,9 +43,9 @@ import com.viaversion.viaversion.api.minecraft.item.DataItem;
 import com.viaversion.viaversion.api.minecraft.item.Item;
 import com.viaversion.viaversion.api.minecraft.item.StructuredItem;
 import com.viaversion.viaversion.api.minecraft.item.data.AdventureModePredicate;
-import com.viaversion.viaversion.api.minecraft.item.data.ArmorTrim;
-import com.viaversion.viaversion.api.minecraft.item.data.ArmorTrimMaterial;
-import com.viaversion.viaversion.api.minecraft.item.data.ArmorTrimPattern;
+import com.viaversion.viaversion.api.minecraft.item.data.trim.ArmorTrim1_20_5;
+import com.viaversion.viaversion.api.minecraft.item.data.trim.ArmorTrimMaterial1_20_5;
+import com.viaversion.viaversion.api.minecraft.item.data.trim.ArmorTrimPattern;
 import com.viaversion.viaversion.api.minecraft.item.data.AttributeModifiers1_20_5;
 import com.viaversion.viaversion.api.minecraft.item.data.AttributeModifiers1_20_5.AttributeModifier;
 import com.viaversion.viaversion.api.minecraft.item.data.AttributeModifiers1_20_5.ModifierData;
@@ -65,7 +65,7 @@ import com.viaversion.viaversion.api.minecraft.item.data.FoodProperties1_20_5;
 import com.viaversion.viaversion.api.minecraft.item.data.FoodProperties1_20_5.FoodEffect;
 import com.viaversion.viaversion.api.minecraft.item.data.Instrument1_20_5;
 import com.viaversion.viaversion.api.minecraft.item.data.LodestoneTracker;
-import com.viaversion.viaversion.api.minecraft.item.data.PotDecorations;
+import com.viaversion.viaversion.api.minecraft.item.data.PotDecorations1_20_5;
 import com.viaversion.viaversion.api.minecraft.item.data.PotionContents;
 import com.viaversion.viaversion.api.minecraft.item.data.PotionEffect;
 import com.viaversion.viaversion.api.minecraft.item.data.PotionEffectData;
@@ -637,7 +637,7 @@ public final class BlockItemPacketRewriter1_20_5 extends ItemRewriter<Clientboun
 
         final IntArrayTag potDecorationsTag = backupTag.getIntArrayTag("pot_decorations");
         if (potDecorationsTag != null && potDecorationsTag.getValue().length == 4) {
-            data.set(StructuredDataKey.POT_DECORATIONS, new PotDecorations(potDecorationsTag.getValue()));
+            data.set(StructuredDataKey.POT_DECORATIONS1_20_5, new PotDecorations1_20_5(potDecorationsTag.getValue()));
         }
 
         final ByteTag enchantmentGlintOverride = backupTag.getByteTag("enchantment_glint_override");
@@ -691,6 +691,11 @@ public final class BlockItemPacketRewriter1_20_5 extends ItemRewriter<Clientboun
         final ListTag<CompoundTag> bannerPatterns = backupTag.getListTag("banner_patterns", CompoundTag.class);
         if (bannerPatterns != null) {
             restoreBannerPatternsFromBackup(bannerPatterns, data);
+        }
+
+        final CompoundTag trim = backupTag.getCompoundTag("trim");
+        if (trim != null) {
+            restoreArmorTrimFromBackup(trim, data);
         }
     }
 
@@ -797,6 +802,25 @@ public final class BlockItemPacketRewriter1_20_5 extends ItemRewriter<Clientboun
             patternLayer.add(new BannerPatternLayer(pattern, dyeColor));
         }
         data.set(StructuredDataKey.BANNER_PATTERNS, patternLayer.toArray(new BannerPatternLayer[0]));
+    }
+
+    private void restoreArmorTrimFromBackup(final CompoundTag trim, final StructuredDataContainer data) {
+        final Tag materialTag = trim.get("material");
+        final Holder<ArmorTrimMaterial1_20_5> materialHolder;
+        if (materialTag instanceof IntTag materialIntTag) {
+            materialHolder = Holder.of(materialIntTag.asInt());
+        } else if (materialTag instanceof CompoundTag materialCompoundTag) {
+            ArmorTrimMaterial1_20_5 material = readTrimMaterial(materialCompoundTag);
+            if (material == null) {
+                return;
+            }
+            materialHolder = Holder.of(material);
+        } else return;
+
+        final Holder<ArmorTrimPattern> patternHolder = Holder.of(trim.getInt("pattern"));
+        final boolean showInTooltip = trim.getBoolean("show_in_tooltip");
+
+        data.set(StructuredDataKey.TRIM1_20_5, new ArmorTrim1_20_5(materialHolder, patternHolder, showInTooltip));
     }
 
     private AdventureModePredicate updateBlockPredicates(final UserConnection connection, final ListTag<StringTag> tag, final boolean showInTooltip) {
@@ -968,9 +992,8 @@ public final class BlockItemPacketRewriter1_20_5 extends ItemRewriter<Clientboun
 
     private void updateArmorTrim(final UserConnection connection, final StructuredDataContainer data, final CompoundTag trimTag, final boolean showInTooltip) {
         final Tag materialTag = trimTag.get("material");
-        final Holder<ArmorTrimMaterial> materialHolder;
-        final ProtocolStorables1_20_5 storables = connection.storables(protocol);
-        final ArmorTrimStorage trimStorage = storables.armorTrims();
+        final Holder<ArmorTrimMaterial1_20_5> materialHolder;
+        final ArmorTrimStorage trimStorage = connection.get(ArmorTrimStorage.class);
         if (materialTag instanceof StringTag materialStringTag) {
             final int id = trimStorage.trimMaterials().keyToId(materialStringTag.getValue());
             if (id == -1) {
@@ -979,39 +1002,11 @@ public final class BlockItemPacketRewriter1_20_5 extends ItemRewriter<Clientboun
 
             materialHolder = Holder.of(id);
         } else if (materialTag instanceof CompoundTag materialCompoundTag) {
-            final StringTag assetNameTag = materialCompoundTag.getStringTag("asset_name");
-            final StringTag ingredientTag = materialCompoundTag.getStringTag("ingredient");
-            if (assetNameTag == null || ingredientTag == null) {
+            ArmorTrimMaterial1_20_5 material = readTrimMaterial(materialCompoundTag);
+            if (material == null) {
                 return;
             }
-
-            final int ingredientId = StructuredDataConverter.removeItemBackupTag(materialCompoundTag, toMappedItemId(ingredientTag.getValue()));
-            if (ingredientId == -1) {
-                return;
-            }
-
-            final NumberTag itemModelIndexTag = materialCompoundTag.getNumberTag("item_model_index");
-            final CompoundTag overrideArmorMaterialsTag = materialCompoundTag.getCompoundTag("override_armor_materials");
-            final Tag descriptionTag = materialCompoundTag.get("description");
-
-            final Map<String, String> overrideArmorMaterials = new Object2ObjectArrayMap<>();
-            if (overrideArmorMaterialsTag != null) {
-                for (final Map.Entry<String, Tag> entry : overrideArmorMaterialsTag.entrySet()) {
-                    if (!(entry.getValue() instanceof StringTag valueTag)) {
-                        continue;
-                    }
-
-                    overrideArmorMaterials.put(entry.getKey(), valueTag.getValue());
-                }
-            }
-
-            materialHolder = Holder.of(new ArmorTrimMaterial(
-                assetNameTag.getValue(),
-                ingredientId,
-                itemModelIndexTag != null ? itemModelIndexTag.asFloat() : 0,
-                overrideArmorMaterials,
-                descriptionTag
-            ));
+            materialHolder = Holder.of(material);
         } else return;
 
         final Tag patternTag = trimTag.get("pattern");
@@ -1045,7 +1040,43 @@ public final class BlockItemPacketRewriter1_20_5 extends ItemRewriter<Clientboun
             ));
         } else return;
 
-        data.set(StructuredDataKey.TRIM1_20_5, new ArmorTrim(materialHolder, patternHolder, showInTooltip));
+        data.set(StructuredDataKey.TRIM1_20_5, new ArmorTrim1_20_5(materialHolder, patternHolder, showInTooltip));
+    }
+
+    private ArmorTrimMaterial1_20_5 readTrimMaterial(final CompoundTag tag) {
+        final StringTag assetNameTag = tag.getStringTag("asset_name");
+        final StringTag ingredientTag = tag.getStringTag("ingredient");
+        if (assetNameTag == null || ingredientTag == null) {
+            return null;
+        }
+
+        final int ingredientId = StructuredDataConverter.removeItemBackupTag(tag, toMappedItemId(ingredientTag.getValue()));
+        if (ingredientId == -1) {
+            return null;
+        }
+
+        final NumberTag itemModelIndexTag = tag.getNumberTag("item_model_index");
+        final CompoundTag overrideArmorMaterialsTag = tag.getCompoundTag("override_armor_materials");
+        final Tag descriptionTag = tag.get("description");
+
+        final Map<String, String> overrideArmorMaterials = new Object2ObjectArrayMap<>();
+        if (overrideArmorMaterialsTag != null) {
+            for (final Map.Entry<String, Tag> entry : overrideArmorMaterialsTag.entrySet()) {
+                if (!(entry.getValue() instanceof StringTag valueTag)) {
+                    continue;
+                }
+
+                overrideArmorMaterials.put(entry.getKey(), valueTag.getValue());
+            }
+        }
+
+        return new ArmorTrimMaterial1_20_5(
+                assetNameTag.getValue(),
+                ingredientId,
+                itemModelIndexTag != null ? itemModelIndexTag.asFloat() : 0,
+                overrideArmorMaterials,
+                descriptionTag
+        );
     }
 
     private void updateMobTags(final StructuredDataContainer data, final CompoundTag tag) {
@@ -1235,7 +1266,7 @@ public final class BlockItemPacketRewriter1_20_5 extends ItemRewriter<Clientboun
         if (itemsTag != null) {
             final Item[] items = itemsTag.stream()
                 .limit(256)
-                .map(item -> itemFromTag(connection, item))
+                .map(item -> itemFromTag(connection, item.copy()))
                 .filter(item -> !item.isEmpty())
                 .toArray(Item[]::new);
             data.set(dataKey, items);
@@ -1462,7 +1493,7 @@ public final class BlockItemPacketRewriter1_20_5 extends ItemRewriter<Clientboun
                 final String rightSherd = sherdsTag.get(2).getValue();
                 final String frontSherd = sherdsTag.get(3).getValue();
 
-                data.set(StructuredDataKey.POT_DECORATIONS, new PotDecorations(
+                data.set(StructuredDataKey.POT_DECORATIONS1_20_5, new PotDecorations1_20_5(
                     toMappedItemId(backSherd),
                     toMappedItemId(leftSherd),
                     toMappedItemId(rightSherd),
